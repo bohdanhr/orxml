@@ -1,6 +1,6 @@
 # orxml
 
-Rust-backed XML ↔ Python dict conversion, API-compatible with the common surface of [`xmltodict`](https://github.com/martinblech/xmltodict). 3–8× faster on a representative corpus.
+Rust-backed XML ↔ Python dict conversion, API-compatible with the common surface of `[xmltodict](https://github.com/martinblech/xmltodict)`. 3–8× faster on a representative corpus.
 
 Uses the [BadgerFish-lite convention](https://www.xml.com/pub/a/2006/05/31/converting-between-xml-and-json.html):
 `@` prefix for attributes, `#text` for text content, lists for repeated sibling elements. Because the shape is JSON-compatible, any parsed dict feeds straight into `json.dumps`.
@@ -27,12 +27,6 @@ doc = orxml.parse("<a prop='x'>hello</a>")
 xml = orxml.unparse(doc)
 ```
 
-For most `xmltodict` call sites, importing orxml under the same name is a drop-in:
-
-```python
-import orxml as xmltodict
-```
-
 ### Supported options
 
 `parse`: `attr_prefix`, `cdata_key`, `force_cdata` (bool / tuple / list), `cdata_separator`, `strip_whitespace`, `namespace_separator`, `process_namespaces`, `namespaces`, `process_comments`, `comment_key`, `force_list` (bool / tuple / list), `disable_entities`, `xml_attribs`.
@@ -53,18 +47,20 @@ Behavior is matched on the observable surface: for every supported option combin
 
 Run on an Apple Silicon laptop comparing orxml against `xmltodict` 0.14:
 
-| Operation | Fixture              |   orxml (mean) |   xmltodict (mean) |   Speedup |
-| :-------- | :------------------- | -------------: | -----------------: | --------: |
-| parse     | tiny.xml             |       3.55 µs  |          14.43 µs  |    4.07×  |
-| parse     | small.xml            |      33.56 µs  |         119.78 µs  |    3.57×  |
-| parse     | rss.xml              |      36.94 µs  |         131.46 µs  |    3.56×  |
-| parse     | soap.xml             |      30.11 µs  |         134.53 µs  |    4.47×  |
-| parse     | large_synthetic.xml  |      51.20 ms  |         162.10 ms  |    3.17×  |
-| unparse   | tiny.xml             |       2.56 µs  |          11.53 µs  |    4.51×  |
-| unparse   | small.xml            |      25.28 µs  |         108.40 µs  |    4.29×  |
-| unparse   | rss.xml              |      27.67 µs  |         112.74 µs  |    4.07×  |
-| unparse   | soap.xml             |      18.52 µs  |          88.06 µs  |    4.75×  |
-| unparse   | large_synthetic.xml  |      33.17 ms  |         257.12 ms  |    7.75×  |
+
+| Operation | Fixture             | orxml (mean) | xmltodict (mean) | Speedup |
+| --------- | ------------------- | ------------ | ---------------- | ------- |
+| parse     | tiny.xml            | 3.55 µs      | 14.43 µs         | 4.07×   |
+| parse     | small.xml           | 33.56 µs     | 119.78 µs        | 3.57×   |
+| parse     | rss.xml             | 36.94 µs     | 131.46 µs        | 3.56×   |
+| parse     | soap.xml            | 30.11 µs     | 134.53 µs        | 4.47×   |
+| parse     | large_synthetic.xml | 51.20 ms     | 162.10 ms        | 3.17×   |
+| unparse   | tiny.xml            | 2.56 µs      | 11.53 µs         | 4.51×   |
+| unparse   | small.xml           | 25.28 µs     | 108.40 µs        | 4.29×   |
+| unparse   | rss.xml             | 27.67 µs     | 112.74 µs        | 4.07×   |
+| unparse   | soap.xml            | 18.52 µs     | 88.06 µs         | 4.75×   |
+| unparse   | large_synthetic.xml | 33.17 ms     | 257.12 ms        | 7.75×   |
+
 
 Reproduce locally with `make bench`.
 
@@ -88,6 +84,38 @@ make all         # sync + build + lint + typecheck + test
 ```bash
 uv run python bench/corpus/generate_large.py 5000   # ~3 MB
 ```
+
+## Releasing
+
+Release artifacts are built and published to PyPI automatically by the `Release` workflow in `.github/workflows/release.yml`. The workflow builds wheels for Linux (glibc + musl) x86_64 / aarch64, macOS x86_64 / arm64, Windows x64, and a source distribution, then publishes them to PyPI using [trusted publishing](https://docs.pypi.org/trusted-publishers/) (no API token stored in the repo).
+
+### One-time PyPI setup
+
+1. Create the `orxml` project on PyPI (happens automatically on first upload, or can be pre-reserved via a pending publisher).
+2. On PyPI → Account settings → Publishing → **Add pending publisher** with:
+   - PyPI project name: `orxml`
+   - Owner: `bohdanhr`
+   - Repository: `orxml`
+   - Workflow: `release.yml`
+   - Environment: `pypi`
+3. (Optional) Create a **GitHub environment** named `pypi` under Settings → Environments. Add protection rules (e.g. required reviewers) if desired.
+
+### Cutting a release
+
+```bash
+# 1. Bump version in Cargo.toml and pyproject.toml (keep them in sync).
+$EDITOR Cargo.toml pyproject.toml
+
+# 2. Commit, tag, and push.
+git commit -am "Release v0.1.1"
+git push
+
+# 3. Create a GitHub Release pointing at a new tag.
+#    The `Release` workflow runs on release.published and uploads to PyPI.
+gh release create v0.1.1 --generate-notes
+```
+
+To dry-run wheel builds without publishing, trigger the workflow manually (`Actions → Release → Run workflow`); the publish step is skipped for `workflow_dispatch` runs.
 
 ## License
 

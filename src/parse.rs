@@ -385,14 +385,10 @@ fn build_attrs<'py>(
 fn resolve_attr_name(reader: &NsReader<&[u8]>, key_bytes: &[u8], opts: &ParseOpts) -> String {
     let qname = QName(key_bytes);
     if !opts.process_namespaces {
-        return std::str::from_utf8(qname.as_ref())
-            .unwrap_or("")
-            .to_owned();
+        return std::str::from_utf8(qname.as_ref()).unwrap_or("").to_owned();
     }
     let (res, local) = reader.resolver().resolve_attribute(qname);
-    let local_s = std::str::from_utf8(local.as_ref())
-        .unwrap_or("")
-        .to_owned();
+    let local_s = std::str::from_utf8(local.as_ref()).unwrap_or("").to_owned();
     match res {
         ResolveResult::Bound(Namespace(uri_bytes)) => {
             let uri = std::str::from_utf8(uri_bytes).unwrap_or("");
@@ -423,11 +419,12 @@ fn decode_predefined_entity(name: &str) -> Option<String> {
         _ => {
             // Numeric char refs: &#N; (decimal) or &#xN; (hex)
             if let Some(rest) = name.strip_prefix('#') {
-                let code = if let Some(hex) = rest.strip_prefix('x').or_else(|| rest.strip_prefix('X')) {
-                    u32::from_str_radix(hex, 16).ok()?
-                } else {
-                    rest.parse::<u32>().ok()?
-                };
+                let code =
+                    if let Some(hex) = rest.strip_prefix('x').or_else(|| rest.strip_prefix('X')) {
+                        u32::from_str_radix(hex, 16).ok()?
+                    } else {
+                        rest.parse::<u32>().ok()?
+                    };
                 return char::from_u32(code).map(|c| c.to_string());
             }
             None

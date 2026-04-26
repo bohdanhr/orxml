@@ -236,9 +236,9 @@ impl UnparseOpts {
 }
 
 fn extract_ns_map(v: &Bound<'_, PyAny>) -> PyResult<Vec<(String, String)>> {
-    let d = v.cast::<PyDict>().map_err(|_| {
-        PyTypeError::new_err("`namespaces` must be a dict mapping URI -> prefix")
-    })?;
+    let d = v
+        .cast::<PyDict>()
+        .map_err(|_| PyTypeError::new_err("`namespaces` must be a dict mapping URI -> prefix"))?;
     let mut out = Vec::with_capacity(d.len());
     for (k, val) in d.iter() {
         let ks: String = k.extract()?;

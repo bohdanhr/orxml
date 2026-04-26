@@ -21,9 +21,9 @@ pub fn unparse<'py>(
     kwargs: Option<&Bound<'py, PyDict>>,
 ) -> PyResult<String> {
     let opts = UnparseOpts::from_kwargs(kwargs)?;
-    let d = input_dict.cast::<PyDict>().map_err(|_| {
-        PyTypeError::new_err("orxml.unparse: input must be a dict")
-    })?;
+    let d = input_dict
+        .cast::<PyDict>()
+        .map_err(|_| PyTypeError::new_err("orxml.unparse: input must be a dict"))?;
 
     let mut out = String::with_capacity(256);
     if opts.full_document {
@@ -184,8 +184,7 @@ fn emit_one(
         append_escaped_attr(out, av);
         out.push('"');
     }
-    let short_empty =
-        opts.short_empty_elements && cdata.is_none() && !has_children_or_comments;
+    let short_empty = opts.short_empty_elements && cdata.is_none() && !has_children_or_comments;
     if short_empty {
         out.push_str("/>");
     } else {
@@ -294,10 +293,7 @@ fn emit_comment(
 
 // ---------- helpers ----------
 
-fn expand_value<'py>(
-    py: Python<'py>,
-    v: &Bound<'py, PyAny>,
-) -> PyResult<Vec<Bound<'py, PyAny>>> {
+fn expand_value<'py>(py: Python<'py>, v: &Bound<'py, PyAny>) -> PyResult<Vec<Bound<'py, PyAny>>> {
     // Wrap scalars/dicts as single-element list; iterables of items stay multi.
     if v.is_none()
         || v.cast::<PyString>().is_ok()
@@ -386,9 +382,7 @@ fn validate_name(name: &str, kind: &str) -> PyResult<()> {
 
 fn validate_comment(text: &str) -> PyResult<()> {
     if text.contains("--") {
-        return Err(PyValueError::new_err(
-            "Comment text cannot contain '--'",
-        ));
+        return Err(PyValueError::new_err("Comment text cannot contain '--'"));
     }
     if text.ends_with('-') {
         return Err(PyValueError::new_err("Comment text cannot end with '-'"));
