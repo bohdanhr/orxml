@@ -1,0 +1,5 @@
+# Code owners for orxml.
+# Rules are matched bottom-up; the last matching rule wins.
+# See https://docs.github.com/en/repositories/managing-your-repositories-settings-and-security/customizing-your-repository/about-code-owners
+
+* @bohdanhr
