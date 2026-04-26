@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module", "abi3-py311"] }
 quick-xml = { version = "0.39", features = ["encoding"] }
+memchr = "2"
 
 [profile.release]
 lto = "thin"

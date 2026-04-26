@@ -72,6 +72,8 @@ pub struct UnparseOpts {
     pub full_document: bool,
     pub short_empty_elements: bool,
     pub encoding: String,
+    /// Precomputed `attr_prefix + "xmlns"` for the hot path.
+    pub xmlns_attr_key: String,
 }
 
 impl Default for UnparseOpts {
@@ -88,7 +90,14 @@ impl Default for UnparseOpts {
             full_document: true,
             short_empty_elements: false,
             encoding: "utf-8".into(),
+            xmlns_attr_key: "@xmlns".into(),
         }
+    }
+}
+
+impl UnparseOpts {
+    fn recompute_derived(&mut self) {
+        self.xmlns_attr_key = format!("{}xmlns", self.attr_prefix);
     }
 }
 
@@ -231,6 +240,7 @@ impl UnparseOpts {
                 _ => unreachable!(),
             }
         }
+        out.recompute_derived();
         Ok(out)
     }
 }

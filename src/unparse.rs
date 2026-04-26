@@ -4,6 +4,16 @@
 //! Writer here because we want full control over attribute ordering (insertion
 //! order, matching xmltodict) and over pretty-printing with arbitrary
 //! `indent`/`newl` strings.
+//!
+//! Hot-path design notes:
+//! * Scalar children (str/int/bool/bytes/None) take a dedicated leaf path that
+//!   never constructs an intermediate PyDict and never collects children.
+//! * For dict-shaped values we walk the mapping exactly once: attributes are
+//!   streamed directly to the output buffer, while children + comments are
+//!   captured into a single `OrderedChild` vector so their original insertion
+//!   order is preserved without re-iterating the dict.
+//! * Text/attribute escaping scans the raw UTF-8 bytes and bulk-copies clean
+//!   ASCII runs, falling back to entity writes only for the escape triggers.
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -68,12 +78,25 @@ fn emit_element(
     opts: &UnparseOpts,
     depth: usize,
 ) -> PyResult<()> {
-    // key may carry a namespace prefix that needs rewriting via opts.namespaces.
+    // `key` may carry a namespace prefix that needs rewriting via opts.namespaces.
     let elem_name = process_namespace(key, opts, false);
     validate_name(&elem_name, "element")?;
 
-    // Expand value to an iterable of "instances" so repeated-key semantics work.
-    let items = expand_value(py, value)?;
+    // Fast path: value isn't an iterable-of-instances, so we don't need the
+    // expand_value() heap allocation.
+    if !is_instance_iterable(value) {
+        return emit_one(py, out, &elem_name, value, opts, depth);
+    }
+
+    let items: Vec<Bound<'_, PyAny>> = if let Ok(l) = value.cast::<PyList>() {
+        l.iter().collect()
+    } else if let Ok(t) = value.cast::<PyTuple>() {
+        t.iter().collect()
+    } else {
+        // Defensive — is_instance_iterable already guarded this.
+        return emit_one(py, out, &elem_name, value, opts, depth);
+    };
+
     for (i, v) in items.iter().enumerate() {
         if opts.full_document && depth == 0 && i > 0 {
             return Err(PyValueError::new_err("document with multiple roots"));
@@ -81,6 +104,13 @@ fn emit_element(
         emit_one(py, out, &elem_name, v, opts, depth)?;
     }
     Ok(())
+}
+
+/// Entries captured during the single dict walk. Attributes stream directly
+/// into the output buffer so they don't need an intermediate representation.
+enum OrderedChild {
+    Element(String, Py<PyAny>),
+    Comment(Py<PyAny>),
 }
 
 fn emit_one(
@@ -91,146 +121,159 @@ fn emit_one(
     opts: &UnparseOpts,
     depth: usize,
 ) -> PyResult<()> {
-    // Normalize v to a dict-shape: scalars -> {cdata_key: str}, None -> {}.
-    let as_dict_holder: Py<PyDict>;
-    let v_dict: &Bound<'_, PyDict> = if v.is_none() {
-        as_dict_holder = PyDict::new(py).unbind();
-        as_dict_holder.bind(py)
-    } else if let Ok(d) = v.cast::<PyDict>() {
-        d
-    } else {
-        let s = convert_value_to_string(v)?;
-        let d = PyDict::new(py);
-        d.set_item(&opts.cdata_key, s)?;
-        as_dict_holder = d.unbind();
-        as_dict_holder.bind(py)
+    // ---- scalar fast paths (no attrs, no children, possibly no text) ----
+    if v.is_none() {
+        emit_leaf(out, elem_name, None, opts, depth);
+        return Ok(());
+    }
+    if let Ok(s) = v.cast::<PyString>() {
+        emit_leaf(out, elem_name, Some(s.to_str()?), opts, depth);
+        return Ok(());
+    }
+    if let Ok(b) = v.cast::<PyBool>() {
+        // PyBool must be checked before PyInt since bool is-a int in Python.
+        emit_leaf(
+            out,
+            elem_name,
+            Some(if b.is_true() { "true" } else { "false" }),
+            opts,
+            depth,
+        );
+        return Ok(());
+    }
+    if let Ok(b) = v.cast::<PyBytes>() {
+        let s = String::from_utf8_lossy(b.as_bytes());
+        emit_leaf(out, elem_name, Some(&s), opts, depth);
+        return Ok(());
+    }
+    if let Ok(ba) = v.cast::<PyByteArray>() {
+        // SAFETY: GIL is held for the duration of this borrow and we copy
+        // immediately.
+        let bytes = unsafe { ba.as_bytes() };
+        let s = String::from_utf8_lossy(bytes);
+        emit_leaf(out, elem_name, Some(&s), opts, depth);
+        return Ok(());
+    }
+    if v.cast::<PyInt>().is_ok() || v.cast::<PyFloat>().is_ok() {
+        let py_s = v.str()?;
+        emit_leaf(out, elem_name, Some(py_s.to_str()?), opts, depth);
+        return Ok(());
+    }
+
+    // ---- dict path ----
+    let v_dict: &Bound<'_, PyDict> = match v.cast::<PyDict>() {
+        Ok(d) => d,
+        Err(_) => {
+            // Arbitrary object → str() and treat as scalar text.
+            let py_s = v.str()?;
+            emit_leaf(out, elem_name, Some(py_s.to_str()?), opts, depth);
+            return Ok(());
+        }
     };
 
-    // Walk the dict once to separate cdata, attributes, children (preserves
-    // insertion order).
-    let mut cdata: Option<String> = None;
-    let mut attrs: Vec<(String, String)> = Vec::new();
-    let mut children: Vec<(String, Py<PyAny>)> = Vec::new();
-    let mut comments: Vec<Py<PyAny>> = Vec::new();
+    // Open tag is emitted up-front so we can stream attributes in place during
+    // the dict walk.
+    if opts.pretty {
+        push_indent(out, &opts.indent, depth);
+    }
+    out.push('<');
+    out.push_str(elem_name);
+
+    let mut cdata_holder: Option<String> = None;
+    let mut ordered: Vec<OrderedChild> = Vec::new();
 
     for (ik, iv) in v_dict.iter() {
         let key: String = ik.extract()?;
+
         if key == opts.cdata_key {
-            if iv.is_none() {
-                cdata = None;
+            cdata_holder = if iv.is_none() {
+                None
             } else {
-                cdata = Some(convert_value_to_string(&iv)?);
-            }
+                Some(convert_value_to_string(&iv)?)
+            };
             continue;
         }
+
         if key.starts_with(&opts.attr_prefix) {
-            // @xmlns as dict: expand into xmlns / xmlns:prefix attrs
-            if key == format!("{}xmlns", opts.attr_prefix) {
+            // @xmlns as a nested dict expands into xmlns / xmlns:prefix attrs.
+            if key == opts.xmlns_attr_key {
                 if let Ok(nsd) = iv.cast::<PyDict>() {
                     for (nk, nv) in nsd.iter() {
                         let prefix: String = nk.extract()?;
                         validate_name(&prefix, "attribute")?;
-                        let uri = if nv.is_none() {
-                            String::new()
+                        out.push(' ');
+                        if prefix.is_empty() {
+                            out.push_str("xmlns");
                         } else {
-                            convert_value_to_string(&nv)?
-                        };
-                        let aname = if prefix.is_empty() {
-                            "xmlns".to_owned()
-                        } else {
-                            format!("xmlns:{prefix}")
-                        };
-                        attrs.push((aname, uri));
+                            out.push_str("xmlns:");
+                            out.push_str(&prefix);
+                        }
+                        out.push_str("=\"");
+                        if !nv.is_none() {
+                            write_attr_value(out, &nv)?;
+                        }
+                        out.push('"');
                     }
                     continue;
                 }
+                // Fallthrough: `@xmlns` with a non-dict value is treated as a
+                // plain attribute below.
             }
             let attr_name_raw = &key[opts.attr_prefix.len()..];
             let attr_name = process_namespace(attr_name_raw, opts, true);
             validate_name(&attr_name, "attribute")?;
-            let val = if iv.is_none() {
-                String::new()
-            } else {
-                convert_value_to_string(&iv)?
-            };
-            attrs.push((attr_name, val));
+            out.push(' ');
+            out.push_str(&attr_name);
+            out.push_str("=\"");
+            if !iv.is_none() {
+                write_attr_value(out, &iv)?;
+            }
+            out.push('"');
             continue;
         }
+
         if key == opts.comment_key {
-            comments.push(iv.unbind());
+            ordered.push(OrderedChild::Comment(iv.unbind()));
             continue;
         }
+
         // Skip empty lists (xmltodict behavior).
         if let Ok(l) = iv.cast::<PyList>() {
             if l.is_empty() {
                 continue;
             }
         }
-        children.push((key, iv.unbind()));
+        ordered.push(OrderedChild::Element(key, iv.unbind()));
     }
 
-    let has_children_or_comments = !children.is_empty() || !comments.is_empty();
+    let has_children_or_comments = !ordered.is_empty();
+    let short_empty = opts.short_empty_elements
+        && cdata_holder.is_none()
+        && !has_children_or_comments;
 
-    // Opening tag
-    if opts.pretty {
-        push_indent(out, &opts.indent, depth);
-    }
-    out.push('<');
-    out.push_str(elem_name);
-    for (an, av) in &attrs {
-        out.push(' ');
-        out.push_str(an);
-        out.push_str("=\"");
-        append_escaped_attr(out, av);
-        out.push('"');
-    }
-    let short_empty = opts.short_empty_elements && cdata.is_none() && !has_children_or_comments;
     if short_empty {
         out.push_str("/>");
     } else {
         out.push('>');
-    }
 
-    if !short_empty {
         if opts.pretty && has_children_or_comments {
             out.push_str(&opts.newl);
         }
 
-        // Comments first (xmltodict emits them before the cdata in _emit order? Let's
-        // look: _emit processes dict entries in iteration order, comments are
-        // emitted via recursive _emit. Our simpler approach: emit comments in
-        // their own pass, but that loses interleaving. For medium parity we emit
-        // comments after children's emission is interleaved in the original.)
-        // Simpler: walk dict again in-order and dispatch comments/children as we
-        // go, since we already captured them.
-        // --- second pass preserving order of children+comments using the
-        // entries list we captured:
-        // To preserve proper ordering we re-walk the original dict.
-        // For simplicity and correctness here, we re-walk v_dict.
-        for (ik, iv) in v_dict.iter() {
-            let k: String = ik.extract()?;
-            if k == opts.cdata_key
-                || k.starts_with(&opts.attr_prefix)
-                || (k == opts.comment_key && is_handled_as_comment())
-            {
-                // comments are handled below
-            }
-            if k == opts.comment_key {
-                emit_comment(out, &iv, opts, depth + 1)?;
-                continue;
-            }
-            if k == opts.cdata_key || k.starts_with(&opts.attr_prefix) {
-                continue;
-            }
-            if let Ok(l) = iv.cast::<PyList>() {
-                if l.is_empty() {
-                    continue;
+        for child in &ordered {
+            match child {
+                OrderedChild::Comment(item) => {
+                    let bound = item.bind(py);
+                    emit_comment(out, bound, opts, depth + 1)?;
+                }
+                OrderedChild::Element(name, item) => {
+                    let bound = item.bind(py);
+                    emit_element(py, out, name, bound, opts, depth + 1)?;
                 }
             }
-            emit_element(py, out, &k, &iv, opts, depth + 1)?;
         }
 
-        if let Some(ref cd) = cdata {
+        if let Some(ref cd) = cdata_holder {
             append_escaped_text(out, cd);
         }
 
@@ -243,17 +286,47 @@ fn emit_one(
         out.push('>');
     }
 
-    if opts.pretty && depth > 0 {
-        out.push_str(&opts.newl);
-    } else if opts.pretty && depth == 0 {
-        // trailing newline after root for pretty mode; match xmltodict
+    if opts.pretty {
+        // Trailing newline after every emitted element (including root) to
+        // match xmltodict's pretty-print output.
         out.push_str(&opts.newl);
     }
     Ok(())
 }
 
-fn is_handled_as_comment() -> bool {
-    true
+/// Emit a leaf element with optional text content, handling pretty-printing
+/// and short_empty_elements.
+fn emit_leaf(
+    out: &mut String,
+    elem_name: &str,
+    text: Option<&str>,
+    opts: &UnparseOpts,
+    depth: usize,
+) {
+    if opts.pretty {
+        push_indent(out, &opts.indent, depth);
+    }
+    match text {
+        None if opts.short_empty_elements => {
+            out.push('<');
+            out.push_str(elem_name);
+            out.push_str("/>");
+        }
+        _ => {
+            out.push('<');
+            out.push_str(elem_name);
+            out.push('>');
+            if let Some(t) = text {
+                append_escaped_text(out, t);
+            }
+            out.push_str("</");
+            out.push_str(elem_name);
+            out.push('>');
+        }
+    }
+    if opts.pretty {
+        out.push_str(&opts.newl);
+    }
 }
 
 fn emit_comment(
@@ -293,28 +366,38 @@ fn emit_comment(
 
 // ---------- helpers ----------
 
-fn expand_value<'py>(py: Python<'py>, v: &Bound<'py, PyAny>) -> PyResult<Vec<Bound<'py, PyAny>>> {
-    // Wrap scalars/dicts as single-element list; iterables of items stay multi.
-    if v.is_none()
-        || v.cast::<PyString>().is_ok()
-        || v.cast::<PyBytes>().is_ok()
-        || v.cast::<PyByteArray>().is_ok()
-        || v.cast::<PyDict>().is_ok()
-        || v.cast::<PyBool>().is_ok()
-        || v.cast::<PyInt>().is_ok()
-        || v.cast::<PyFloat>().is_ok()
-    {
-        return Ok(vec![v.clone()]);
+/// A value is "instance-iterable" iff it should be expanded into siblings by
+/// emit_element (list/tuple of instances). Scalars/dicts/None stay as a single
+/// instance.
+fn is_instance_iterable(v: &Bound<'_, PyAny>) -> bool {
+    v.cast::<PyList>().is_ok() || v.cast::<PyTuple>().is_ok()
+}
+
+/// Streaming attribute value writer that avoids allocating for PyString.
+fn write_attr_value(out: &mut String, v: &Bound<'_, PyAny>) -> PyResult<()> {
+    if let Ok(s) = v.cast::<PyString>() {
+        append_escaped_attr(out, s.to_str()?);
+        return Ok(());
     }
-    if let Ok(l) = v.cast::<PyList>() {
-        return Ok(l.iter().collect());
+    if let Ok(b) = v.cast::<PyBool>() {
+        out.push_str(if b.is_true() { "true" } else { "false" });
+        return Ok(());
     }
-    if let Ok(t) = v.cast::<PyTuple>() {
-        return Ok(t.iter().collect());
+    if let Ok(b) = v.cast::<PyBytes>() {
+        let s = String::from_utf8_lossy(b.as_bytes());
+        append_escaped_attr(out, &s);
+        return Ok(());
     }
-    // Fallback: try to convert to string.
-    let s = convert_value_to_string(v)?;
-    Ok(vec![PyString::new(py, &s).into_any()])
+    if let Ok(ba) = v.cast::<PyByteArray>() {
+        let bytes = unsafe { ba.as_bytes() };
+        let s = String::from_utf8_lossy(bytes);
+        append_escaped_attr(out, &s);
+        return Ok(());
+    }
+    // Catch-all: str() via Python.
+    let py_s = v.str()?;
+    append_escaped_attr(out, py_s.to_str()?);
+    Ok(())
 }
 
 fn convert_value_to_string(v: &Bound<'_, PyAny>) -> PyResult<String> {
@@ -337,7 +420,6 @@ fn convert_value_to_string(v: &Bound<'_, PyAny>) -> PyResult<String> {
         let bytes = unsafe { ba.as_bytes() };
         return Ok(String::from_utf8_lossy(bytes).into_owned());
     }
-    // Fallback: Python str()
     Ok(v.str()?.to_str()?.to_owned())
 }
 
@@ -396,30 +478,69 @@ fn push_indent(out: &mut String, indent: &str, depth: usize) {
     }
 }
 
+/// Append `s` to `out`, escaping XML text-content specials (`& < >`).
+///
+/// Scans raw UTF-8 bytes for the ASCII-only escape triggers using memchr3,
+/// bulk-copying clean runs via `push_str`. Slicing at ASCII-byte boundaries
+/// always yields valid UTF-8, which is why `from_utf8_unchecked` is safe here.
 fn append_escaped_text(out: &mut String, s: &str) {
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            _ => out.push(ch),
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match memchr::memchr3(b'&', b'<', b'>', &bytes[i..]) {
+            Some(rel) => {
+                let pos = i + rel;
+                // SAFETY: bytes[i..pos] ends just before an ASCII byte, so the
+                // slice is valid UTF-8.
+                out.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[i..pos]) });
+                out.push_str(match bytes[pos] {
+                    b'&' => "&amp;",
+                    b'<' => "&lt;",
+                    _ => "&gt;",
+                });
+                i = pos + 1;
+            }
+            None => {
+                // SAFETY: bytes[i..] starts on a UTF-8 boundary because we
+                // only advanced past ASCII escape bytes.
+                out.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[i..]) });
+                break;
+            }
         }
     }
 }
 
+/// Append `s` to `out`, escaping XML attribute-value specials
+/// (`& < > " \t \n \r`).
+///
+/// Byte-loop variant (7 needles — memchr only goes up to 3). Still bulk-copies
+/// clean runs between escape points.
 fn append_escaped_attr(out: &mut String, s: &str) {
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\t' => out.push_str("&#9;"),
-            '\n' => out.push_str("&#10;"),
-            '\r' => out.push_str("&#13;"),
-            _ => out.push(ch),
-        }
+    let bytes = s.as_bytes();
+    let mut last = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let ent = match bytes[i] {
+            b'&' => "&amp;",
+            b'<' => "&lt;",
+            b'>' => "&gt;",
+            b'"' => "&quot;",
+            b'\t' => "&#9;",
+            b'\n' => "&#10;",
+            b'\r' => "&#13;",
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        // SAFETY: bytes[last..i] ends just before an ASCII byte.
+        out.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[last..i]) });
+        out.push_str(ent);
+        i += 1;
+        last = i;
     }
+    // SAFETY: bytes[last..] starts on a UTF-8 boundary.
+    out.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[last..]) });
 }
 
 /// Rewrite `name` via the namespaces dict if it has a namespace prefix.
