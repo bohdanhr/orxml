@@ -85,38 +85,6 @@ make all         # sync + build + lint + typecheck + test
 uv run python bench/corpus/generate_large.py 5000   # ~3 MB
 ```
 
-## Releasing
-
-Release artifacts are built and published to PyPI automatically by the `Release` workflow in `.github/workflows/release.yml`. The workflow builds wheels for Linux (glibc + musl) x86_64 / aarch64, macOS x86_64 / arm64, Windows x64, and a source distribution, then publishes them to PyPI using [trusted publishing](https://docs.pypi.org/trusted-publishers/) (no API token stored in the repo).
-
-### One-time PyPI setup
-
-1. Create the `orxml` project on PyPI (happens automatically on first upload, or can be pre-reserved via a pending publisher).
-2. On PyPI → Account settings → Publishing → **Add pending publisher** with:
-   - PyPI project name: `orxml`
-   - Owner: `bohdanhr`
-   - Repository: `orxml`
-   - Workflow: `release.yml`
-   - Environment: `pypi`
-3. (Optional) Create a **GitHub environment** named `pypi` under Settings → Environments. Add protection rules (e.g. required reviewers) if desired.
-
-### Cutting a release
-
-```bash
-# 1. Bump version in Cargo.toml and pyproject.toml (keep them in sync).
-$EDITOR Cargo.toml pyproject.toml
-
-# 2. Commit, tag, and push.
-git commit -am "Release v0.1.1"
-git push
-
-# 3. Create a GitHub Release pointing at a new tag.
-#    The `Release` workflow runs on release.published and uploads to PyPI.
-gh release create v0.1.1 --generate-notes
-```
-
-To dry-run wheel builds without publishing, trigger the workflow manually (`Actions → Release → Run workflow`); the publish step is skipped for `workflow_dispatch` runs.
-
 ## License
 
 MIT
