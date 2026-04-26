@@ -99,7 +99,9 @@ fn emit_element(
 
     for (i, v) in items.iter().enumerate() {
         if opts.full_document && depth == 0 && i > 0 {
-            return Err(PyValueError::new_err("document with multiple roots"));
+            return Err(PyValueError::new_err(
+                "Document must have exactly one root.",
+            ));
         }
         emit_one(py, out, &elem_name, v, opts, depth)?;
     }
@@ -286,9 +288,10 @@ fn emit_one(
         out.push('>');
     }
 
-    if opts.pretty {
-        // Trailing newline after every emitted element (including root) to
-        // match xmltodict's pretty-print output.
+    if opts.pretty && depth > 0 {
+        // Trailing newline acts as a separator between siblings. The root
+        // element (depth == 0) is the last thing emitted and gets no trailing
+        // newline, matching xmltodict's pretty output byte-for-byte.
         out.push_str(&opts.newl);
     }
     Ok(())
@@ -324,7 +327,8 @@ fn emit_leaf(
             out.push('>');
         }
     }
-    if opts.pretty {
+    if opts.pretty && depth > 0 {
+        // Newline is a sibling separator, not a terminator; see emit_one.
         out.push_str(&opts.newl);
     }
 }
