@@ -4,14 +4,45 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. 0.1.0). Ignored on release events."
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 jobs:
+  # ---- 1. resolve the version exactly once from the tag (or manual input)
+  resolve:
+    name: resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            raw="${{ github.event.release.tag_name }}"
+          else
+            raw="${{ inputs.version }}"
+          fi
+          if [[ -z "$raw" ]]; then
+            echo "error: no version could be resolved" >&2
+            exit 1
+          fi
+          version="${raw#refs/tags/}"
+          version="${version#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $version"
+
+  # ---- 2. build wheels per platform (each calls scripts/set-version.sh first)
   linux:
     name: wheels-linux-${{ matrix.target }}
     runs-on: ubuntu-latest
+    needs: resolve
     strategy:
       fail-fast: false
       matrix:
@@ -21,6 +52,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Set version
+        run: scripts/set-version.sh "${{ needs.resolve.outputs.version }}"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -37,6 +70,7 @@ jobs:
   musllinux:
     name: wheels-musllinux-${{ matrix.target }}
     runs-on: ubuntu-latest
+    needs: resolve
     strategy:
       fail-fast: false
       matrix:
@@ -46,6 +80,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Set version
+        run: scripts/set-version.sh "${{ needs.resolve.outputs.version }}"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -62,6 +98,7 @@ jobs:
   macos:
     name: wheels-macos-${{ matrix.target }}
     runs-on: macos-latest
+    needs: resolve
     strategy:
       fail-fast: false
       matrix:
@@ -71,6 +108,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Set version
+        run: scripts/set-version.sh "${{ needs.resolve.outputs.version }}"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -86,6 +125,7 @@ jobs:
   windows:
     name: wheels-windows-${{ matrix.target }}
     runs-on: windows-latest
+    needs: resolve
     strategy:
       fail-fast: false
       matrix:
@@ -96,6 +136,9 @@ jobs:
         with:
           python-version: "3.11"
           architecture: ${{ matrix.target }}
+      - name: Set version
+        shell: bash
+        run: scripts/set-version.sh "${{ needs.resolve.outputs.version }}"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -111,8 +154,11 @@ jobs:
   sdist:
     name: sdist
     runs-on: ubuntu-latest
+    needs: resolve
     steps:
       - uses: actions/checkout@v4
+      - name: Set version
+        run: scripts/set-version.sh "${{ needs.resolve.outputs.version }}"
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
@@ -124,11 +170,12 @@ jobs:
           name: wheels-sdist
           path: dist
 
+  # ---- 3. publish (release events only)
   publish:
     name: Publish to PyPI
     runs-on: ubuntu-latest
     if: github.event_name == 'release' && github.event.action == 'published'
-    needs: [linux, musllinux, macos, windows, sdist]
+    needs: [resolve, linux, musllinux, macos, windows, sdist]
     environment:
       name: pypi
       url: https://pypi.org/p/orxml
