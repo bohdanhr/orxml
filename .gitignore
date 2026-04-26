@@ -1,0 +1,27 @@
+# Rust
+target/
+Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ty_cache/
+dist/
+build/
+*.egg-info/
+.benchmarks/
+.python-version
+
+# maturin
+*.so
+*.dylib
+*.pyd
+
+# IDE
+.vscode/
+.idea/

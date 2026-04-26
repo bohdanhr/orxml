@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope
+    xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+    xmlns:wsa="http://www.w3.org/2005/08/addressing"
+    xmlns:wss="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"
+    xmlns:inv="http://example.com/inventory">
+  <soap:Header>
+    <wsa:MessageID>urn:uuid:11111111-2222-3333-4444-555555555555</wsa:MessageID>
+    <wsa:Action>http://example.com/inventory/GetItemsResponse</wsa:Action>
+    <wsa:To>http://example.com/svc/inventory</wsa:To>
+    <wss:Security soap:mustUnderstand="1">
+      <wss:UsernameToken>
+        <wss:Username>service-account</wss:Username>
+        <wss:Nonce>abcdef0123456789</wss:Nonce>
+      </wss:UsernameToken>
+    </wss:Security>
+  </soap:Header>
+  <soap:Body>
+    <inv:GetItemsResponse>
+      <inv:Items>
+        <inv:Item id="A-001" category="widgets">
+          <inv:Name>Small Widget</inv:Name>
+          <inv:Qty>120</inv:Qty>
+          <inv:Price currency="USD">3.50</inv:Price>
+          <inv:Tags>
+            <inv:Tag>blue</inv:Tag>
+            <inv:Tag>metal</inv:Tag>
+          </inv:Tags>
+        </inv:Item>
+        <inv:Item id="A-002" category="widgets">
+          <inv:Name>Large Widget</inv:Name>
+          <inv:Qty>15</inv:Qty>
+          <inv:Price currency="USD">12.00</inv:Price>
+          <inv:Tags>
+            <inv:Tag>red</inv:Tag>
+            <inv:Tag>metal</inv:Tag>
+            <inv:Tag>heavy</inv:Tag>
+          </inv:Tags>
+        </inv:Item>
+        <inv:Item id="B-001" category="gizmos">
+          <inv:Name>Gadget Alpha</inv:Name>
+          <inv:Qty>50</inv:Qty>
+          <inv:Price currency="EUR">7.95</inv:Price>
+          <inv:Tags>
+            <inv:Tag>plastic</inv:Tag>
+          </inv:Tags>
+        </inv:Item>
+        <inv:Item id="B-002" category="gizmos">
+          <inv:Name>Gadget Beta</inv:Name>
+          <inv:Qty>0</inv:Qty>
+          <inv:Price currency="EUR">9.95</inv:Price>
+          <inv:Tags/>
+        </inv:Item>
+      </inv:Items>
+    </inv:GetItemsResponse>
+  </soap:Body>
+</soap:Envelope>

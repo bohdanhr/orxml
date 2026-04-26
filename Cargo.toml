@@ -1,0 +1,19 @@
+[package]
+name = "orxml"
+version = "0.1.0"
+edition = "2021"
+description = "Rust-backed XML <-> dict conversion (xmltodict-compatible)"
+license = "MIT"
+repository = "https://github.com/bohdanhr/orxml"
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module", "abi3-py311"] }
+quick-xml = { version = "0.39", features = ["encoding"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
