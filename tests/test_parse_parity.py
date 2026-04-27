@@ -101,6 +101,23 @@ def test_parse_result_type_is_plain_dict() -> None:
     assert isinstance(result, dict)
 
 
+@pytest.mark.parametrize(
+    "inp",
+    [
+        b"",
+        "",
+        "   ",
+        '<?xml version="1.0"?>',
+        "<!-- just a comment -->",
+    ],
+)
+def test_parse_raises_when_no_root_element(inp: bytes | str) -> None:
+    # Matches xmltodict's ExpatError("no element found") behavior and keeps
+    # the `dict[str, Any]` return type on the Python side honest.
+    with pytest.raises((orxml.ParseError, ValueError)):
+        orxml.parse(inp)
+
+
 def test_parse_preserves_element_order() -> None:
     xml = "<r><c/><a/><b/></r>"
     doc = orxml.parse(xml)

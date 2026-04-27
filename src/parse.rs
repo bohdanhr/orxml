@@ -349,7 +349,11 @@ fn parse_bytes<'py>(
 
     match root_item {
         Some(obj) => Ok(obj.into_bound(py)),
-        None => Ok(py.None().into_bound(py)),
+        // No root element was opened and closed (e.g. empty input, whitespace
+        // only, XML declaration only, comment only). Match xmltodict by
+        // raising instead of silently returning None so the `dict[str, Any]`
+        // return type on the Python side is honest.
+        None => Err(ParseError::new_err("no element found")),
     }
 }
 

@@ -24,8 +24,22 @@ def parse(
     disable_entities: bool = True,
     xml_attribs: bool = True,
     encoding: str | None = None,
-) -> Any:
-    """Parse XML into a Python dict (xmltodict-compatible)."""
+) -> dict[str, Any]:
+    """Parse XML into a Python dict (xmltodict-compatible).
+
+    For schema-aware callers, cast the result to a ``TypedDict`` at the
+    boundary::
+
+        from typing import TypedDict, cast
+
+        class Root(TypedDict):
+            item: str
+
+        data = cast(Root, orxml.parse(xml))
+
+    ``encoding`` is accepted for ``xmltodict`` API compatibility but is
+    ignored: the underlying parser auto-detects the input encoding.
+    """
 
 def unparse(
     input_dict: dict[str, Any],
