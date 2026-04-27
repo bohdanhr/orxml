@@ -249,9 +249,8 @@ fn emit_one(
     }
 
     let has_children_or_comments = !ordered.is_empty();
-    let short_empty = opts.short_empty_elements
-        && cdata_holder.is_none()
-        && !has_children_or_comments;
+    let short_empty =
+        opts.short_empty_elements && cdata_holder.is_none() && !has_children_or_comments;
 
     if short_empty {
         out.push_str("/>");

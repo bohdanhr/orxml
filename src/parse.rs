@@ -221,9 +221,7 @@ fn parse_bytes<'py>(
                             .decode()
                             .map_err(|e| ParseError::new_err(format!("{e}")))?;
                         if doctype_has_entity_decl(&s) {
-                            return Err(ParseError::new_err(
-                                "entities are disabled".to_string(),
-                            ));
+                            return Err(ParseError::new_err("entities are disabled".to_string()));
                         }
                     }
                     RawEvent::Ignore
