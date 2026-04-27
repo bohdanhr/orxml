@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "orxml"
-version = "0.1.0"
+version = "0.2.0"
 description = "Rust-backed xmltodict-compatible XML parser/emitter with PyO3 bindings"
 readme = "README.md"
 license = { text = "MIT" }
